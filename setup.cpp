@@ -1,5 +1,6 @@
 #include "idefix.hpp"
 #include "setup.hpp"
+#include <cmath>
 
 // Default constructor
 real v_from_lM(real lMx, real c2x);
@@ -13,8 +14,8 @@ real LinearInterpolation(std::vector<real>& x, std::vector<real>& y, real x_inte
 real *RK4_RHS (real t, int n, real u[], real Ah);
 real *RK4Update (real t0, int m, real u0[], real dt, real *f (real t, int m, real u[], real Ah), real Ah); 
 real CalcStationaryShock (real M_rsh0x, real c2_rsh0x, real r_shx, real Ah);
-void UserdefBoundary(DataBlock& data, int dir, BoundarySide side, real t);
-void MySourceTerm(DataBlock &data, const real t, const real dtin);
+void UserdefBoundary(Hydro *hydro, int dir, BoundarySide side, real t);
+void MySourceTerm(Hydro *hydro, const real t, const real dtin);
 void CoarsenFunction(DataBlock &data);
 
 real Aheat, Acool, rsh; 
@@ -55,7 +56,7 @@ std::vector<real> z_arr, M_arr, c_arr;
 // Arrays or variables which are used later on
 Setup::Setup(Input &input, Grid &grid, DataBlock &data, Output &output) {
 
-  gammaGlob = data.hydro.GetGamma();
+  gammaGlob = data.hydro->eos->GetGamma();
   gm1  = gammaGlob - ONE_F; 
   gm1i = ONE_F / gm1; 
 
@@ -65,8 +66,8 @@ Setup::Setup(Input &input, Grid &grid, DataBlock &data, Output &output) {
   Aheat = input.Get<real>("Setup", "Aheat",  ZERO_F);
   rsh   = input.Get<real>("Setup", "Rshock", ZERO_F);
 
-  data.hydro.EnrollUserDefBoundary(&UserdefBoundary);
-  data.hydro.EnrollUserSourceTerm(&MySourceTerm);
+  data.hydro->EnrollUserDefBoundary(&UserdefBoundary);
+  data.hydro->EnrollUserSourceTerm(&MySourceTerm);
   if(data.haveGridCoarsening) {
     data.EnrollGridCoarseningLevels(&CoarsenFunction);
   }
@@ -188,10 +189,22 @@ void Setup::InitFlow(DataBlock &data) {
     }
     for(int k = 0; k < d.np_tot[KDIR] ; k++) {
       for(int j = 0; j < d.np_tot[JDIR] ; j++) {
+        real theta = d.x[JDIR](j);
+        real phi = d.x[KDIR](k);
         d.Vc(PRS,k,j,i) = px;
         d.Vc(RHO,k,j,i) = rhox;
-        d.Vc(VX1,k,j,i) = vx;
-        d.Vc(VX2,k,j,i) = ZERO_F;
+        if(r >= 5 && r <= 7){
+          d.Vc(VX1,k,j,i) = vx;// - (0.01/d.Vc(RHO,k,j,i))*sqrt(3/M_PI)*(5*cos(theta)*pow(sin(theta), 3/2)*sin(M_PI*(5 - r)/(5 - 7)))/(4*r*r*sqrt(sin(theta)*sin(theta))); //l=1
+          d.Vc(VX2,k,j,i) = ZERO_F;// - (0.01/d.Vc(RHO,k,j,i))*(sqrt(3*M_PI*sin(theta)*sin(theta)*sin(theta))*cos(M_PI*(5 - r)/(5 - 7)))/(2*r*(5 - 7));
+          //d.Vc(VX1,k,j,i) = ZERO_F - (0.015/d.Vc(RHO,k,j,i))*(sqrt((15/(2*M_PI)))*pow(sin(theta), 3/2)*sin((M_PI*(5 - r))/(5 - 7))*(7*cos(2*theta) + 3))/(8*r*r*sqrt(sin(theta)*sin(theta))); //l=2
+          //d.Vc(VX2,k,j,i) = ZERO_F - (0.015/d.Vc(RHO,k,j,i))*(sqrt(15*M_PI*sin(theta)*sin(theta)*sin(theta)/2)*cos(theta)*cos(M_PI*(5 - r)/(5 - 7)))/(2*r*(5 - 7));
+          //d.Vc(VX1,k,j,i) = vx - (0.015/d.Vc(RHO,k,j,i))*sqrt(5/M_PI)*3*(27 + 56*cos(2*theta) + 77*cos(4*theta))*pow(sin(theta), 3/2)*sin(M_PI*(5 - r)/(5 - 7))/(128*r*r*sqrt(pow(sin(theta), 2))); //l=4
+          //d.Vc(VX2,k,j,i) = ZERO_F + (0.015/d.Vc(RHO,k,j,i))*sqrt(5*M_PI*pow(sin(theta), 3))*3*(3 - 7*pow(cos(theta), 2))*cos(theta)*cos(M_PI*(5 - r)/(5 - 7))/(8*(5 - 7)*r);
+        }
+        else{
+          d.Vc(VX1,k,j,i) = vx;
+          d.Vc(VX2,k,j,i) = ZERO_F;
+        }
         d.Vc(VX3,k,j,i) = ZERO_F;
       }
     }
@@ -202,12 +215,12 @@ void Setup::InitFlow(DataBlock &data) {
 }
 //----------------------------------------------------------------------------------------
 
-void MySourceTerm(DataBlock &data, const real t, const real dtin) {
-  IdefixArray4D<real> Vc = data.hydro.Vc;
-  IdefixArray4D<real> Uc = data.hydro.Uc;
-  IdefixArray1D<real> x1 = data.x[IDIR];
+void MySourceTerm(Hydro *hydro, const real t, const real dtin) {
+  IdefixArray4D<real> Vc = data->hydro->Vc;
+  IdefixArray4D<real> Uc = data->hydro->Uc;
+  IdefixArray1D<real> x1 = data->x[IDIR];
 
-  idefix_for("MySourceTerm",0,data.np_tot[KDIR],0,data.np_tot[JDIR],0,data.np_tot[IDIR],
+  idefix_for("MySourceTerm",0,data->np_tot[KDIR],0,data->np_tot[JDIR],0,data->np_tot[IDIR],
     KOKKOS_LAMBDA (int k, int j, int i) {
 
       real c2 = gammaGlob * Vc(PRS,k,j,i) / Vc(RHO,k,j,i);
@@ -223,14 +236,14 @@ void MySourceTerm(DataBlock &data, const real t, const real dtin) {
 }
 //----------------------------------------------------------------------------------------
 
-void UserdefBoundary(DataBlock& data, int dir, BoundarySide side, real t) {
-  IdefixArray4D<real> Vc = data.hydro.Vc;
-  IdefixArray1D<real> x1 = data.x[IDIR];
-  const int nxi    = data.np_int[IDIR];
-  const int ighost = data.nghost[IDIR];
+void UserdefBoundary(Hydro *hydro, int dir, BoundarySide side, real t) {
+  IdefixArray4D<real> Vc = data->hydro->Vc;
+  IdefixArray1D<real> x1 = data->x[IDIR];
+  const int nxi    = data->np_int[IDIR];
+  const int ighost = data->nghost[IDIR];
 
   if(dir==IDIR) {
-    data.hydro.boundary.BoundaryFor("UserDefBoundary", dir, side,
+    data->hydro->boundary->BoundaryFor("UserDefBoundary", dir, side,
       KOKKOS_LAMBDA (int k, int j, int i) {
         if (side == right) {
 
@@ -240,20 +253,20 @@ void UserdefBoundary(DataBlock& data, int dir, BoundarySide side, real t) {
 
         } else if (side == left) {
 
-          const int iref = ighost + side*(nxi-1); // outflow          
-          Vc(RHO,k,j,i) =   Vc(RHO,k,j,iref);
-          Vc(PRS,k,j,i) =   Vc(PRS,k,j,iref);
-          Vc(VX1,k,j,i) =   - Vc(VX1,k,j,iref); // v_rpns; // fixed velocity
-          Vc(VX2,k,j,i) =   Vc(VX2,k,j,iref);
-          Vc(VX3,k,j,i) =   Vc(VX3,k,j,iref);
+          // const int iref = ighost + side*(nxi-1); // outflow          
+          // Vc(RHO,k,j,i) =   Vc(RHO,k,j,iref);
+          // Vc(PRS,k,j,i) =   Vc(PRS,k,j,iref);
+          // Vc(VX1,k,j,i) =   - Vc(VX1,k,j,iref); // v_rpns; // fixed velocity
+          // Vc(VX2,k,j,i) =   Vc(VX2,k,j,iref);
+          // Vc(VX3,k,j,i) =   Vc(VX3,k,j,iref);
 
           // reflection
-          // const int iref = 2*(ighost + side*(nxi-1)) - i - 1; // reflection
-          // Vc(RHO,k,j,i)  =  Vc(RHO,k,j,iref);
-          // Vc(PRS,k,j,i)  =  Vc(PRS,k,j,iref);
-          // Vc(VX1,k,j,i)  =  - Vc(VX1,k,j,iref); // reflection
-          // Vc(VX2,k,j,i)  =  Vc(VX2,k,j,iref);
-          // Vc(VX3,k,j,i)  =  Vc(VX3,k,j,iref);
+          const int iref = 2*(ighost + side*(nxi-1)) - i - 1; // reflection
+          Vc(RHO,k,j,i)  =  Vc(RHO,k,j,iref);
+          Vc(PRS,k,j,i)  =  Vc(PRS,k,j,iref);
+          Vc(VX1,k,j,i)  =  - Vc(VX1,k,j,iref); // reflection
+          Vc(VX2,k,j,i)  =  Vc(VX2,k,j,iref);
+          Vc(VX3,k,j,i)  =  Vc(VX3,k,j,iref);
         }
       });   
   }
