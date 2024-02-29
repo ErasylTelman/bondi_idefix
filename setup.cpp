@@ -216,6 +216,7 @@ void Setup::InitFlow(DataBlock &data) {
 //----------------------------------------------------------------------------------------
 
 void MySourceTerm(Hydro *hydro, const real t, const real dtin) {
+  auto *data = hydro->data;
   IdefixArray4D<real> Vc = data->hydro->Vc;
   IdefixArray4D<real> Uc = data->hydro->Uc;
   IdefixArray1D<real> x1 = data->x[IDIR];
@@ -237,6 +238,7 @@ void MySourceTerm(Hydro *hydro, const real t, const real dtin) {
 //----------------------------------------------------------------------------------------
 
 void UserdefBoundary(Hydro *hydro, int dir, BoundarySide side, real t) {
+  auto *data = hydro->data;
   IdefixArray4D<real> Vc = data->hydro->Vc;
   IdefixArray1D<real> x1 = data->x[IDIR];
   const int nxi    = data->np_int[IDIR];
